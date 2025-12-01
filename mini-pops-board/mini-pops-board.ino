@@ -3,7 +3,6 @@
 
 // http://janostman.wordpress.com
 
-
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <avr/pgmspace.h>
@@ -32,16 +31,39 @@
 
 const unsigned char PS_128 = (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 
-
-
-
 //--------- Ringbuf parameters ----------
 uint8_t Ringbuffer[256];
 uint8_t RingWrite = 0;
 uint8_t RingRead = 0;
 volatile uint8_t RingCount = 0;
 volatile uint16_t SFREQ;
+
+volatile uint16_t tempo = 3500; // Global declaration for tempo 
+volatile uint8_t stepcnt = 0; 
+volatile uint8_t patlength = 0;
 //-----------------------------------------
+
+volatile uint16_t samplecntBD = 0;
+volatile uint16_t samplecntBG2 = 0;
+volatile uint16_t samplecntCL = 0;
+volatile uint16_t samplecntCW = 0;
+volatile uint16_t samplecntCY = 0;
+volatile uint16_t samplecntGU = 0;
+volatile uint16_t samplecntMA = 0;
+volatile uint16_t samplecntQU = 0;
+
+volatile uint16_t samplepntBD = 0;
+volatile uint16_t samplepntBG2 = 0;
+volatile uint16_t samplepntCL = 0;
+volatile uint16_t samplepntCW = 0;
+volatile uint16_t samplepntCY = 0;
+volatile uint16_t samplepntGU = 0;
+volatile uint16_t samplepntMA = 0;
+volatile uint16_t samplepntQU = 0;
+
+volatile uint8_t playing = 1;
+volatile uint8_t stepPulse = 0;
+volatile uint8_t patselect = 0;
 
 ISR(TIMER1_COMPA_vect) {
 
@@ -54,10 +76,64 @@ ISR(TIMER1_COMPA_vect) {
 
   //-----------------------------------------------------------------
 }
-
-
 int clockOutPin = 13;
 
+ISR(TIMER0_COMPA_vect) {
+    static uint16_t tempocnt = 100; // Initialize with safe default
+
+    if (playing) {
+      digitalWriteFast(15, HIGH);  //play state out Hi
+      if (!(tempocnt--)) {
+        tempocnt = tempo; // Reset tempocnt based on the adjustable tempo value
+        
+        digitalWriteFast(clockOutPin, stepPulse );  //Clock out Hi
+        stepPulse = stepPulse == 1 ? 0 : 1;
+
+        uint8_t trig = pgm_read_byte_near(pattern + (patselect << 4) + stepcnt++);
+        PORTC = stepcnt;
+        uint8_t mask = (PIND >> 2) | ((PINB & 3) << 6);
+        trig &= mask;
+        
+        if (stepcnt > patlength) stepcnt = 0;
+        
+        if (trig & 1) {
+          samplepntQU = 0;
+          samplecntQU = 7712;
+        }
+        if (trig & 2) {
+          samplepntCY = 0;
+          samplecntCY = 9434;
+        }
+        if (trig & 4) {
+          samplepntMA = 0;
+          samplecntMA = 568;
+        }
+        if (trig & 8) {
+          samplepntCW = 0;
+          samplecntCW = 830;
+        }
+        if (trig & 16) {
+          samplepntCL = 0;
+          samplecntCL = 752;
+        }
+        if (trig & 32) {
+          samplepntBD = 0;
+          samplecntBD = 1076;
+        }
+        if (trig & 64) {
+          samplepntBG2 = 0;
+          samplecntBG2 = 1136;
+        }
+        if (trig & 128) {
+          samplepntGU = 0;
+          samplecntGU = 2816;
+        }
+      }
+    } else {
+      digitalWriteFast(15, LOW);  //play state out Lo
+      digitalWriteFast(clockOutPin, 0);  //Clock out Lo
+    }
+}
 
 
 void setup() {
@@ -126,19 +202,17 @@ void setup() {
   // Set initial pulse width to the first sample.
   OCR2A = 128;
 
-  //set timer0 interrupt at 61Hz
-  TCCR0A = 0;  // set entire TCCR0A register to 0
-  TCCR0B = 0;  // same for TCCR0B
-  TCNT0 = 0;   //initialize counter value to 0
-  // set compare match register for 62hz increments
-  OCR0A = 255;  // = 61Hz
-  // turn on CTC mode
-  TCCR0A |= (1 << WGM01);
-  // Set CS01 and CS00 bits for prescaler 1024
-  TCCR0B |= (1 << CS02) | (0 << CS01) | (1 << CS00);  //1024 prescaler
+  // Set up Timer 0 for tempo control (1kHz / 1ms)
+  TCCR0A = 0; // Set entire TCCR0A register to 0
+  TCCR0B = 0; // Same for TCCR0B
+  TCNT0 = 0;  // Initialize counter value to 0
 
-  TIMSK0 = 0;
+  // Set compare match register for 1kHz increments
+  OCR0A = 249; // (16*10^6) / (1000*64) - 1 (must be <256)
+  TCCR0A |= (1 << WGM01); // Turn on CTC mode
+  TCCR0B |= (1 << CS01) | (1 << CS00); // 64 prescaler
 
+  TIMSK0 |= (1 << OCIE0A); // Enable Timer0 compare interrupt
 
   // set up the ADC
   SFREQ = analogRead(0);
@@ -155,37 +229,13 @@ void setup() {
   // Serial.println("[f] to speed up, [d] to slow down.  [space] to pause.");
 }
 
-
-
-
 void loop() {
 
-  uint16_t samplecntBD, samplecntBG2, samplecntCL, samplecntCW, samplecntCY, samplecntGU, samplecntMA, samplecntQU;
-
-  samplecntBD = 0;
-  samplecntBG2 = 0;
-  samplecntCL = 0;
-  samplecntCW = 0;
-  samplecntCY = 0;
-  samplecntGU = 0;
-  samplecntMA = 0;
-  samplecntQU = 0;
-
-  uint16_t samplepntBD, samplepntBG2, samplepntCL, samplepntCW, samplepntCY, samplepntGU, samplepntMA, samplepntQU;
-
   int16_t total;
-
-  uint8_t stepcnt = 0;
-  uint16_t tempo = 3500;
-  uint16_t tempocnt = 1;
+  
   uint8_t MUX = 4;
-  uint8_t playing = 1;
 
-  uint8_t stepPulse = 0;
-
-
-  uint8_t patselect = 0;
-  uint8_t patlength = pgm_read_byte_near(patlen + patselect);
+  patlength = pgm_read_byte_near(patlen + patselect);
 
   // leon add start stop
   int startButtonState;            // the current reading from the input pin
@@ -200,6 +250,7 @@ void loop() {
 
   unsigned long debounceCount = 0;
   unsigned long debounceMax = 1000;
+
 
   while (1) {
 
@@ -246,9 +297,9 @@ void loop() {
       RingWrite++;
       RingCount++;
       sei();
+    
 
-
-      //----------------------------------------------------------------------------
+     //----------------------------------------------------------------------------
       // Start Stop
       // read the state of the switch into a local variable:
       int reading = digitalReadFast(10);
@@ -299,82 +350,28 @@ void loop() {
       lastFsButtonState = readingFS;
 
       debounceCount = debounceCount + 1 < debounceMax ? debounceCount + 1 : 0;
+  // Serial.println(digitalReadFast(10));
+    
 
-      // Serial.println(digitalReadFast(10));
+  //--------- sequencer block REMOVED ----------------------------------------------
+  
+  //--------------- ADC block -------------------------------------
+  if (!(ADCSRA & 64)) {
+    uint16_t value = ((ADCL + (ADCH << 8)) >> 3) + 1;
+    if (MUX == 6) tempo = (value * 2) + 40;  // Scale to ms (approx 40-300ms)
 
-      //--------- sequencer block ----------------------------------------------
-      if (playing) {
-        digitalWriteFast(15, HIGH);  //play state out Hi
-        if (!(tempocnt--)) {
-          tempocnt = tempo;
-          digitalWriteFast(clockOutPin, stepPulse );  //Clock out Hi
-          stepPulse = stepPulse == 1 ? 0 : 1;
-          uint8_t trig = pgm_read_byte_near(pattern + (patselect << 4) + stepcnt++);
-          PORTC = stepcnt;
-          uint8_t mask = (PIND >> 2) | ((PINB & 3) << 6);
-          trig &= mask;
-          if (stepcnt > patlength) stepcnt = 0;
-          // if (stepcnt == 0) digitalWriteFast(12, HIGH);  //Reset out Hi
-          // if (stepcnt != 0) digitalWriteFast(12, LOW);   //Reset out Lo
-          if (trig & 1) {
-            samplepntQU = 0;
-            samplecntQU = 7712;
-          }
-          if (trig & 2) {
-            samplepntCY = 0;
-            samplecntCY = 9434;
-          }
-          if (trig & 4) {
-            samplepntMA = 0;
-            samplecntMA = 568;
-          }
-          if (trig & 8) {
-            samplepntCW = 0;
-            samplecntCW = 830;
-          }
-          if (trig & 16) {
-            samplepntCL = 0;
-            samplecntCL = 752;
-          }
-          if (trig & 32) {
-            samplepntBD = 0;
-            samplecntBD = 1076;
-          }
-          if (trig & 64) {
-            samplepntBG2 = 0;
-            samplecntBG2 = 1136;
-          }
-          if (trig & 128) {
-            samplepntGU = 0;
-            samplecntGU = 2816;
-          }
-        }
-        // digitalWriteFast(clockOutPin, 0);  //Clock out Lo
-      } else {
-        digitalWriteFast(15, LOW);  //play state out Lo
-        digitalWriteFast(clockOutPin, 0);  //Clock out Lo
-      }
-    }
-    //--------------- ADC block -------------------------------------
-    if (!(ADCSRA & 64)) {
+    // // if (MUX == 6) tempo = map(value, 1, 128,1250, 17633);
+    // if (MUX == 6) tempo = map(value, 1, 128,1250, 9633) + (OCR1A * 3);
+    if (MUX == 5) patselect = (value - 1) >> 3;
+    if (MUX == 5) patlength = pgm_read_byte_near(patlen + patselect);
+    // if (MUX == 4) OCR1A = (value << 2) + 256;
+    if (MUX == 4) OCR1A = map(value, 1, 128, 600, 1000);
 
-      uint16_t value=((ADCL+(ADCH<<8))>>3)+1;
-      // if (MUX==6) tempo=(value<<4)+1250;  //17633-1250
-      if (MUX==6) tempo=(value<<4)+OCR1A;  //17633-1250
-
-      // // if (MUX==6) tempo=map(value, 1, 128,1250, 17633 );
-      // if (MUX==6) tempo=map(value, 1, 128,1250, 9633 ) + (OCR1A*3);
-      if (MUX==5) patselect=(value-1)>>3;
-      if (MUX==5) patlength=pgm_read_byte_near(patlen + patselect);
-      // if (MUX==4) OCR1A = (value << 2) + 256;
-      if (MUX==4) OCR1A=map(value, 1, 128,600, 1000 );
-
-      
-      MUX++;
-      if (MUX==8) MUX=4;
-      ADMUX = 64 | MUX; //Select MUX
-      sbi(ADCSRA, ADSC); //start next conversation
-    };
-    //---------------------------------------------------------------
+    MUX++;
+    if (MUX == 8) MUX = 4;
+    ADMUX = 64 | MUX; //Select MUX
+    sbi(ADCSRA, ADSC); //start next conversation
   }
-}
+  //---------------------------------------------------------------
+  }
+}}
